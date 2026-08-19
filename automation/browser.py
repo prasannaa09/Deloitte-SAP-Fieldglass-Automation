@@ -1,6 +1,7 @@
 """Playwright browser management module providing configurable context creation and lifecycle control."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from loguru import logger
@@ -40,19 +41,25 @@ class PlaywrightManager:
         download_path = self.settings.DOWNLOAD_DIR.resolve()
         download_path.mkdir(parents=True, exist_ok=True)
 
+        launch_args = ["--start-maximized"]
+        if browser_type_name == "chromium":
+            launch_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
+
         self._browser = await browser_type.launch(
             headless=self.settings.HEADLESS,
+            slow_mo=self.settings.SLOW_MO,
             downloads_path=str(download_path),
-            args=(
-                ["--no-sandbox", "--disable-setuid-sandbox"]
-                if browser_type_name == "chromium"
-                else []
-            ),
+            args=launch_args,
         )
-        logger.info(f"Browser {self.settings.BROWSER_TYPE} launched successfully.")
+        logger.info(f"Browser {self.settings.BROWSER_TYPE} launched successfully (maximized).")
 
-    async def create_context(self) -> BrowserContext:
-        """Create a new browser context configured with download directory and default timeouts.
+    async def create_context(
+        self, storage_state: Path | str | None = None
+    ) -> BrowserContext:
+        """Create a new browser context configured with download directory, default timeouts, and optional auth storage state.
+
+        Args:
+            storage_state: Optional file path to saved auth storage state JSON.
 
         Returns:
             BrowserContext: Configured browser context instance.
@@ -60,10 +67,18 @@ class PlaywrightManager:
         if not self._browser:
             raise RuntimeError("Browser is not initialized. Call initialize() first.")
 
-        context = await self._browser.new_context(
-            accept_downloads=True,
-            viewport={"width": 1920, "height": 1080},
-        )
+        kwargs = {
+            "accept_downloads": True,
+            "no_viewport": True,
+        }
+
+        if storage_state:
+            state_path = Path(storage_state)
+            if state_path.exists():
+                kwargs["storage_state"] = str(state_path)
+                logger.info(f"Using saved session state from: {state_path}")
+
+        context = await self._browser.new_context(**kwargs)
         context.set_default_timeout(self.settings.DEFAULT_TIMEOUT)
         logger.info("Browser context created successfully.")
         return context
