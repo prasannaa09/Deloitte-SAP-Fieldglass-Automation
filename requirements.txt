@@ -11,3 +11,4 @@ black>=24.1.0
 isort>=5.13.0
 mypy>=1.8.0
 psycopg[binary]>=3.2
+pypdf>=5.0

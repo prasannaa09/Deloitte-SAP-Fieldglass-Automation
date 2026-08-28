@@ -451,4 +451,5 @@ every document as changed on every run.
 | `automation/timesheet_data.py` | Detail page parsing; extraction orchestration |
 | `db/postgres.py` | Schema, upserts, connection handling |
 | `db/export.py` | Multi-sheet Excel export from the database |
-| `main.py` | Commands — `data`, `pdfs`, `both` |
+| `automation/timesheet_merge.py` | Merging a month's weekly PDFs into one document per resource |
+| `cli.py` | Commands — `check`, `data`, `pdfs`, `both`, `merge`, `export`, `study` |

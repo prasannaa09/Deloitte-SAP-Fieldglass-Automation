@@ -1,11 +1,9 @@
 """Playwright browser management module providing configurable context creation and lifecycle control."""
 
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
 
 from loguru import logger
-from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
+from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
 from config.settings import Settings, get_settings
 
@@ -67,18 +65,20 @@ class PlaywrightManager:
         if not self._browser:
             raise RuntimeError("Browser is not initialized. Call initialize() first.")
 
-        kwargs = {
-            "accept_downloads": True,
-            "no_viewport": True,
-        }
-
+        # Passed explicitly rather than splatted from a dict: a dict holding both the boolean
+        # flags and the storage-state path widens to a type new_context will not accept.
+        saved_state: str | None = None
         if storage_state:
             state_path = Path(storage_state)
             if state_path.exists():
-                kwargs["storage_state"] = str(state_path)
+                saved_state = str(state_path)
                 logger.info(f"Using saved session state from: {state_path}")
 
-        context = await self._browser.new_context(**kwargs)
+        context = await self._browser.new_context(
+            accept_downloads=True,
+            no_viewport=True,
+            storage_state=saved_state,
+        )
         context.set_default_timeout(self.settings.DEFAULT_TIMEOUT)
         logger.info("Browser context created successfully.")
         return context
@@ -93,27 +93,3 @@ class PlaywrightManager:
             await self._playwright.stop()
             self._playwright = None
             logger.info("Playwright engine stopped.")
-
-
-@asynccontextmanager
-async def get_browser_session(
-    settings: Settings | None = None,
-) -> AsyncGenerator[tuple[BrowserContext, Page], None]:
-    """Async context manager to provide a managed browser context and page session.
-
-    Args:
-        settings: Application settings.
-
-    Yields:
-        tuple[BrowserContext, Page]: Active context and primary page.
-    """
-    manager = PlaywrightManager(settings=settings)
-    await manager.initialize()
-    context = await manager.create_context()
-    page = await context.new_page()
-    try:
-        yield context, page
-    finally:
-        await page.close()
-        await context.close()
-        await manager.close()

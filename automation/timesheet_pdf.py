@@ -49,6 +49,15 @@ _PDF_XSLT = "xslt/timesheet/timesheet.xsl"
 _PDF_MODULE_ID = "70"
 
 
+def worker_slug(worker_name: str) -> str:
+    """Filename-safe form of a worker's name.
+
+    Shared with the merge step, which groups a month's weekly PDFs back together by this
+    exact slug - defining it once is what keeps the two sides from drifting apart.
+    """
+    return re.sub(r"[^A-Za-z0-9]+", "_", worker_name).strip("_")
+
+
 @dataclass
 class TimesheetRow:
     """One row of the Time Sheet list, carrying everything needed to fetch its PDF."""
@@ -69,11 +78,11 @@ class TimesheetRow:
     def pdf_filename(self) -> str:
         """Worker, then ISO week-ending, then the timesheet id.
 
-        Worker first groups a person's weeks together; the ISO date keeps those weeks in
-        order within the group; the DLTTS id makes the name unique and joins the file back
-        to its row in InvoiceSheet.xlsx.
+        Worker first groups a person's weeks together, which is what the merge step relies on;
+        the ISO date keeps those weeks in order within the group; the DLTTS id makes the name
+        unique and joins the file back to its row in the database.
         """
-        who = re.sub(r"[^A-Za-z0-9]+", "_", self.worker_name).strip("_")
+        who = worker_slug(self.worker_name)
         day, month, year = self.end_date.split("/")
         return f"{who}__{year}-{month}-{day}__{self.time_sheet_ref}.pdf"
 

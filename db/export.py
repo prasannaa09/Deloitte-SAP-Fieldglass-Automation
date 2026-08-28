@@ -176,6 +176,16 @@ def export_month_to_excel(
         ],
     })
 
+    # Excel holds an exclusive lock on an open workbook. Write alongside it rather than failing
+    # the run, so a review session in progress never costs the export.
+    try:
+        with output_file.open("ab"):
+            pass
+    except PermissionError:
+        locked = output_file
+        output_file = output_file.with_name(f"{output_file.stem}_new{output_file.suffix}")
+        logger.warning(f"{locked.name} is open in Excel; writing to {output_file.name} instead.")
+
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Summary", index=False)
         timesheets.to_excel(writer, sheet_name="Timesheets", index=False)
