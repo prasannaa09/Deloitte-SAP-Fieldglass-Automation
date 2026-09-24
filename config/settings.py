@@ -15,12 +15,23 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # SAP Fieldglass Credentials & Core Configuration
+    # SAP Fieldglass Credentials & Core Configuration (Deloitte)
     SAP_URL: str = Field(
         default="https://www.us.fieldglass.cloud.sap/", description="SAP Fieldglass login URL"
     )
     SAP_USERNAME: str = Field(default="", description="SAP Fieldglass username")
     SAP_PASSWORD: str = Field(default="", description="SAP Fieldglass password")
+
+    # SAP Fieldglass Credentials & Configuration (IBM)
+    IBM_SAP_URL: str = Field(
+        default="https://www.us.fieldglass.cloud.sap/", description="IBM SAP Fieldglass login URL"
+    )
+    IBM_SAP_USERNAME: str = Field(default="", description="IBM SAP Fieldglass username")
+    IBM_SAP_PASSWORD: str = Field(default="", description="IBM SAP Fieldglass password")
+    IBM_BUYER_CODE: str = Field(default="DYNPRO", description="IBM SAP Fieldglass buyer code")
+    IBM_AUTH_FILE_PATH: Path = Field(
+        default=Path("auth_ibm.json"), description="File path for stored IBM authentication state"
+    )
 
     # Directory Paths
     BASE_DIR: Path = Field(default_factory=lambda: Path(__file__).resolve().parent.parent)
@@ -67,6 +78,8 @@ class Settings(BaseSettings):
         """Ensure path attributes are absolute paths resolved relative to BASE_DIR."""
         if not self.AUTH_FILE_PATH.is_absolute():
             object.__setattr__(self, "AUTH_FILE_PATH", (self.BASE_DIR / self.AUTH_FILE_PATH).resolve())
+        if not self.IBM_AUTH_FILE_PATH.is_absolute():
+            object.__setattr__(self, "IBM_AUTH_FILE_PATH", (self.BASE_DIR / self.IBM_AUTH_FILE_PATH).resolve())
         if not self.DOWNLOAD_DIR.is_absolute():
             object.__setattr__(self, "DOWNLOAD_DIR", (self.BASE_DIR / self.DOWNLOAD_DIR).resolve())
         if not self.REPORT_DIR.is_absolute():

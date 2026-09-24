@@ -10,69 +10,82 @@ from config.settings import Settings
 from automation.navigation import ensure_home_page_ready, HomePageNotReadyError
 
 
-async def authenticate_session(context: BrowserContext, page: Page, settings: Settings) -> tuple[bool, Page]:
+async def authenticate_session(
+    context: BrowserContext, page: Page, settings: Settings, client: str = "deloitte"
+) -> tuple[bool, Page]:
     """Authenticate SAP Fieldglass session using saved storage_state if available or fresh login.
 
     Args:
         context: Active Playwright BrowserContext.
         page: Active Playwright Page instance.
         settings: Application settings.
+        client: Client identifier ('deloitte' or 'ibm').
 
     Returns:
         tuple[bool, Page]: (True if authenticated successfully, False otherwise; with Page instance).
     """
-    auth_file = settings.AUTH_FILE_PATH
+    is_ibm = client.lower() == "ibm"
+    auth_file = settings.IBM_AUTH_FILE_PATH if is_ibm else settings.AUTH_FILE_PATH
+    target_url = settings.IBM_SAP_URL if is_ibm else settings.SAP_URL
 
     if settings.USE_SAVED_SESSION and auth_file.exists():
-        logger.info(f"Checking saved session state from: {auth_file}")
+        logger.info(f"[{client.upper()}] Checking saved session state from: {auth_file}")
         try:
-            await page.goto(settings.SAP_URL, wait_until="domcontentloaded", timeout=settings.DEFAULT_TIMEOUT)
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=settings.DEFAULT_TIMEOUT)
             page_title = await page.title()
             username_loc = page.get_by_role("textbox", name="Username")
             is_login_form_visible = await username_loc.is_visible() if await username_loc.count() > 0 else await page.is_visible("#usernameId_new, input[name='username']")
 
             if not is_login_form_visible and "Sign In" not in page_title:
-                logger.success("Loaded existing session")
+                logger.success(f"[{client.upper()}] Loaded existing session")
                 try:
                     await ensure_home_page_ready(page, timeout=settings.DEFAULT_TIMEOUT)
                     return True, page
                 except HomePageNotReadyError as prep_err:
-                    logger.warning(f"Home page readiness failed for saved session: {prep_err}. Re-authenticating via fresh login...")
+                    logger.warning(f"[{client.upper()}] Home page readiness failed for saved session: {prep_err}. Re-authenticating via fresh login...")
             else:
-                logger.warning("Session expired")
+                logger.warning(f"[{client.upper()}] Session expired")
         except Exception as exc:
             sanitized_msg = str(exc).encode("ascii", "replace").decode("ascii")
-            logger.warning(f"Error checking session state: {sanitized_msg}")
-            logger.warning("Session expired")
+            logger.warning(f"[{client.upper()}] Error checking session state: {sanitized_msg}")
+            logger.warning(f"[{client.upper()}] Session expired")
 
-    logger.info("Performing fresh login")
-    success, page = await login_to_fieldglass(page=page, settings=settings)
+    logger.info(f"[{client.upper()}] Performing fresh login")
+    success, page = await login_to_fieldglass(page=page, settings=settings, client=client)
     if success:
         try:
             auth_file.parent.mkdir(parents=True, exist_ok=True)
             await context.storage_state(path=str(auth_file))
-            logger.success("Saved new session")
+            logger.success(f"[{client.upper()}] Saved new session to {auth_file}")
         except Exception as exc:
             logger.warning(f"Failed to save session state to {auth_file}: {exc}")
 
     return success, page
 
 
-async def login_to_fieldglass(page: Page, settings: Settings) -> tuple[bool, Page]:
+async def login_to_fieldglass(page: Page, settings: Settings, client: str = "deloitte") -> tuple[bool, Page]:
     """Navigate to SAP Fieldglass login page, fill credentials, and authenticate.
 
     Args:
         page: Active Playwright Page instance.
         settings: Application settings containing SAP URL and credentials.
+        client: Client identifier ('deloitte' or 'ibm').
 
     Returns:
         tuple[bool, Page]: (True if login succeeded, False otherwise; along with the Page instance).
     """
-    url = settings.SAP_URL
-    username = settings.SAP_USERNAME or "dynprodel"
-    password = settings.SAP_PASSWORD or "Dynpro@2026"
+    is_ibm = client.lower() == "ibm"
+    url = settings.IBM_SAP_URL if is_ibm else settings.SAP_URL
+    username = (settings.IBM_SAP_USERNAME if is_ibm else (settings.SAP_USERNAME or "dynprodel")).strip()
+    password = (settings.IBM_SAP_PASSWORD if is_ibm else (settings.SAP_PASSWORD or "Dynpro@2026")).strip()
 
-    logger.info(f"Initiating SAP Fieldglass login to URL: {url}")
+    if is_ibm and (not username or not password or "your_ibm" in username):
+        logger.error(
+            "IBM credentials are not configured! Please set IBM_SAP_USERNAME and IBM_SAP_PASSWORD in your .env file."
+        )
+        return False, page
+
+    logger.info(f"[{client.upper()}] Initiating SAP Fieldglass login to URL: {url}")
 
     try:
         # 1. Navigate to SAP Fieldglass login page

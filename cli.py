@@ -49,17 +49,20 @@ def resolve_month(month: str | None) -> tuple[str, str]:
         raise SystemExit(f"--month must look like 07/2026 (got {month!r})") from exc
 
 
-async def _session(settings: Settings) -> tuple[PlaywrightManager, BrowserContext, Page] | None:
+async def _session(settings: Settings, client: str = "deloitte") -> tuple[PlaywrightManager, BrowserContext, Page] | None:
     """Open a browser context and authenticate. Returns (manager, context, page)."""
+    is_ibm = client.lower() == "ibm"
+    auth_file = settings.IBM_AUTH_FILE_PATH if is_ibm else settings.AUTH_FILE_PATH
     manager = PlaywrightManager(settings=settings)
     await manager.initialize()
-    storage = settings.AUTH_FILE_PATH if settings.AUTH_FILE_PATH.exists() else None
+    storage = auth_file if auth_file.exists() else None
     context = await manager.create_context(storage_state=storage)
     page = await context.new_page()
 
-    ok, page = await authenticate_session(context=context, page=page, settings=settings)
+    ok, page = await authenticate_session(context=context, page=page, settings=settings, client=client)
     if not ok:
-        logger.error("Authentication failed - check SAP_USERNAME / SAP_PASSWORD in .env")
+        cred_label = "IBM_SAP_USERNAME / IBM_SAP_PASSWORD" if is_ibm else "SAP_USERNAME / SAP_PASSWORD"
+        logger.error(f"Authentication failed - check {cred_label} in .env")
         await manager.close()
         return None
     return manager, context, page
@@ -69,6 +72,7 @@ async def _session(settings: Settings) -> tuple[PlaywrightManager, BrowserContex
 async def cmd_check(args: argparse.Namespace, settings: Settings) -> int:
     """Verify database, schema and portal access before committing to a long run."""
     failures = 0
+    client = getattr(args, "client", "deloitte") or "deloitte"
 
     logger.info("1/3  PostgreSQL connection...")
     ok, info = postgres.check_connection(settings)
@@ -96,8 +100,8 @@ async def cmd_check(args: argparse.Namespace, settings: Settings) -> int:
         logger.error(f"     {str(exc).splitlines()[0]}")
         failures += 1
 
-    logger.info("3/3  SAP Fieldglass session...")
-    session = await _session(settings)
+    logger.info(f"3/3  SAP Fieldglass session [{client.upper()}]...")
+    session = await _session(settings, client=client)
     if session is None:
         failures += 1
     else:
@@ -110,6 +114,7 @@ async def cmd_check(args: argparse.Namespace, settings: Settings) -> int:
     else:
         logger.success("All checks passed - ready to run.")
     return 1 if failures else 0
+
 
 
 # --------------------------------------------------------------------------- data
@@ -325,6 +330,71 @@ async def cmd_study(args: argparse.Namespace, settings: Settings) -> int:
     return 1 if failures else 0
 
 
+# --------------------------------------------------------------------------- ibm-req
+async def cmd_ibm_req(args: argparse.Namespace, settings: Settings) -> int:
+    """Search for IBM requisition(s) via Global Search, extract details, and save to files/DB."""
+    from automation.ibm_requisition import (
+        search_and_open_requisition,
+        extract_job_posting_details,
+        save_requisition_records,
+    )
+    from db.ibm_models import upsert_ibm_requisitions
+
+    req_ids: list[str] = []
+    if args.id:
+        req_ids.append(args.id.strip())
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            logger.error(f"Requisitions file not found: {file_path}")
+            return 1
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                val = line.strip()
+                if val and not val.startswith("#"):
+                    req_ids.append(val)
+
+    if not req_ids:
+        logger.error("No requisition ID specified! Use --id <REQ_ID> or --file <PATH_TO_IDS_FILE>")
+        return 1
+
+    logger.info(f"Preparing to process {len(req_ids)} IBM Requisition(s)...")
+    session = await _session(settings, client="ibm")
+    if session is None:
+        return 1
+
+    manager, context, page = session
+    records = []
+    try:
+        for i, req_id in enumerate(req_ids, 1):
+            logger.info(f"[{i}/{len(req_ids)}] Searching for Requisition ID: '{req_id}'")
+            found = await search_and_open_requisition(page, req_id, timeout=settings.DEFAULT_TIMEOUT)
+            if not found:
+                logger.error(f"Failed to locate or open Requisition: '{req_id}'")
+                continue
+
+            record = await extract_job_posting_details(page, req_id=req_id)
+            records.append(record)
+
+        if not records:
+            logger.warning("No requisition records were extracted.")
+            return 1
+
+        requested_formats = [fmt.strip().lower() for fmt in args.format.split(",") if fmt.strip()]
+        saved_files = save_requisition_records(records, settings.REPORT_DIR, formats=requested_formats)
+
+        if "db" in requested_formats or getattr(args, "db", False):
+            upsert_ibm_requisitions(settings, records)
+
+        logger.success(f"Successfully completed extraction for {len(records)} requisition(s)!")
+        for fmt, pth in saved_files.items():
+            logger.info(f"Saved {fmt.upper()} report -> {pth}")
+
+        return 0
+    finally:
+        await manager.close()
+
+
 COMMANDS = {
     "check": cmd_check,
     "data": cmd_data,
@@ -333,13 +403,14 @@ COMMANDS = {
     "merge": cmd_merge,
     "export": cmd_export,
     "study": cmd_study,
+    "ibm-req": cmd_ibm_req,
 }
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cli.py",
-        description="SAP Fieldglass timesheet extraction and document retrieval.",
+        description="SAP Fieldglass timesheet and requisition automation pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -353,8 +424,12 @@ def build_parser() -> argparse.ArgumentParser:
         ("merge", "combine weekly PDFs into one document per resource"),
         ("export", "write the Excel workbook from stored data"),
         ("study", "coverage, completeness and integrity report"),
+        ("ibm-req", "search IBM requisition ID, extract details, and save to reports"),
     ):
         p = sub.add_parser(name, help=help_text)
+        if name == "check":
+            p.add_argument("--client", default="deloitte", choices=["deloitte", "ibm"],
+                           help="client to verify portal access for (default: deloitte)")
         if name in ("data", "pdfs", "both", "export", "merge"):
             p.add_argument("--month", help="target month as MM/YYYY (default: previous month)")
         if name in ("data", "pdfs", "both"):
@@ -373,6 +448,12 @@ def build_parser() -> argparse.ArgumentParser:
                            help="month directory to merge (default: the month's download dir)")
         if name == "export":
             p.add_argument("--out", type=Path, default=None, help="output .xlsx path")
+        if name == "ibm-req":
+            p.add_argument("--id", help="single Requisition / Job Posting ID to search (e.g. IBMFG2JP00040793)")
+            p.add_argument("--file", help="path to text file containing Requisition IDs (one per line)")
+            p.add_argument("--format", default="json,excel,csv",
+                           help="comma-separated output formats: json,excel,csv,db (default: json,excel,csv)")
+            p.add_argument("--db", action="store_true", help="upsert extracted records into PostgreSQL database")
     return parser
 
 
